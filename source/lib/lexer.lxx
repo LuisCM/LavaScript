@@ -1,0 +1,298 @@
+
+%option c++
+%option warn
+%option noyywrap
+%option nounistd
+%option yylineno
+
+%{
+
+/* +-------------------------------------------------+ *
+ * | Prologue section, copied to output source file: | *
+ * +-------------------------------------------------+ */
+
+/*
+ * NOTE: Flex version 2.6 or higher recommended.
+ */
+
+#define INC_LEXER 1
+#include "ls_common.hpp"
+#undef  INC_LEXER
+
+#include "ls_symbol_table.hpp"
+
+namespace lavascript
+{
+
+/* +-------------------------------------------------+ *
+ * | Helper macros used by the generated code:       | *
+ * +-------------------------------------------------+ */
+
+// Note that these logging macros capture the current context,
+// so they can only be called from within the FlexLexer class.
+// Enabling these can be useful for debugging the lexer.
+#if LAVASCRIPT_DUMP_LEXER_TOKENS
+    #ifndef LAVASCRIPT_LEXER_LOG_STREAM
+        #define LAVASCRIPT_LEXER_LOG_STREAM stdout
+    #endif // LAVASCRIPT_LEXER_LOG_STREAM
+    #define LEX_LOG_COMMENT(msg)  std::fprintf(LAVASCRIPT_LEXER_LOG_STREAM, "[LEX_CM](%02i): %s\n", lineno(), (msg))
+    #define LEX_LOG_TOKEN(token)  std::fprintf(LAVASCRIPT_LEXER_LOG_STREAM, "[LEX_TK](%02i): '%s'\n", (yylineno), (token))
+    #define LEX_LOG_TYPE(type)    std::fprintf(LAVASCRIPT_LEXER_LOG_STREAM, "[LEX_TP](%02i): '%s'\n", (yylineno), (type))
+    #define LEX_LOG_KEYW(keyword) std::fprintf(LAVASCRIPT_LEXER_LOG_STREAM, "[LEX_KW](%02i): '%s'\n", (yylineno), (keyword))
+    #define LEX_LOG_IDENT()       std::fprintf(LAVASCRIPT_LEXER_LOG_STREAM, "[LEX_ID](%02i): '%s'\n", (yylineno), (yytext))
+    #define LEX_LOG_LIT(type)     std::fprintf(LAVASCRIPT_LEXER_LOG_STREAM, "[LEX_LI](%02i): '%s' (%s)\n", (yylineno), (yytext), (type))
+#else // !LAVASCRIPT_DUMP_LEXER_TOKENS
+    #define LEX_LOG_COMMENT(msg)
+    #define LEX_LOG_TOKEN(token)
+    #define LEX_LOG_TYPE(type)
+    #define LEX_LOG_KEYW(keyword)
+    #define LEX_LOG_IDENT()
+    #define LEX_LOG_LIT(type)
+#endif // LAVASCRIPT_DUMP_LEXER_TOKENS
+
+// We are forced to cast the yyFlexLexer 'this' pointer to our lavascript::Lexer when
+// calling the helper methods or using the extended ParseContext member. I do not know
+// of a more elegant way of handling this with the generated FlexLexer code at the moment...
+#define AS_LAVASCRIPT_LEXER(ptr) (*static_cast<lavascript::Lexer *>(ptr))
+
+// Overwritten so we can capture the input to
+// remember the current line for error printing.
+#define YY_INPUT(buf, result, maxSize) AS_LAVASCRIPT_LEXER(this).lexOnInput((char *)buf, result, maxSize)
+
+// Calls our custom error handler (called by FlexLexer).
+#define YY_FATAL_ERROR(message) AS_LAVASCRIPT_LEXER(this).lexOnError(message)
+
+/* +-------------------------------------------------------+ *
+ * | lavascript::Lexer local methods:                      | *
+ * +-------------------------------------------------------+ */
+
+void Lexer::lexOnError(const char * message)
+{
+    const std::string filename = (ctx.srcFile != nullptr) ? *ctx.srcFile : "???";
+    lexerError(message, filename, lineno(), ctx.currText);
+}
+
+void Lexer::lexOnInput(char * buf, int & result, const int maxSize)
+{
+    const auto readCount = LexerInput(buf, maxSize);
+    if (readCount < 0)
+    {
+        YY_FATAL_ERROR("lexer input failed");
+    }
+    if (ctx.currText != nullptr && readCount > 0)
+    {
+        ctx.currText->append(buf, readCount);
+    }
+    result = readCount;
+}
+
+void Lexer::lexOnNewLine()
+{
+    if (ctx.currText != nullptr)
+    {
+        ctx.currText->clear();
+    }
+}
+
+void Lexer::lexOnSingleLineComment()
+{
+    int ch;
+    LEX_LOG_COMMENT("Skipping single-line comment");
+    while ((ch = yyinput()) != '\n' && ch != YY_NULL) { }
+}
+
+void Lexer::lexOnMultiLineComment()
+{
+    LEX_LOG_COMMENT("Skipping multi-line comment");
+    for (int ch;;)
+    {
+        while ((ch = yyinput()) != '*' && ch != YY_NULL)
+        {
+            // Skip chars until the next '*' or EOF.
+        }
+        if (ch == '*')
+        {
+            while ((ch = yyinput()) == '*')
+            {
+                // Eat up any '*' that follow the first one.
+            }
+            if (ch == '/')
+            {
+                break; // Found the comment's end.
+            }
+        }
+        if (ch == YY_NULL)
+        {
+            YY_FATAL_ERROR("unexpected end-of-file while scanning multi-line comment");
+            break;
+        }
+    }
+}
+
+/* +-------------------------------------------------------+ *
+ * | lavascript::Lexer special symbol/token handlers:      | *
+ * +-------------------------------------------------------+ */
+
+void Lexer::lexOnIdentifier()
+{
+    LAVASCRIPT_ASSERT(ctx.yylval   != nullptr);
+    LAVASCRIPT_ASSERT(ctx.symTable != nullptr);
+    ctx.yylval->asSymbol = ctx.symTable->findOrDefineIdentifier(YYText(), lineno());
+}
+
+void Lexer::lexOnIntLiteral()
+{
+    LAVASCRIPT_ASSERT(ctx.yylval   != nullptr);
+    LAVASCRIPT_ASSERT(ctx.symTable != nullptr);
+    ctx.yylval->asSymbol = ctx.symTable->findOrDefineLiteral(YYText(), lineno(), Symbol::Type::IntLiteral);
+}
+
+void Lexer::lexOnFloatLiteral()
+{
+    LAVASCRIPT_ASSERT(ctx.yylval   != nullptr);
+    LAVASCRIPT_ASSERT(ctx.symTable != nullptr);
+    ctx.yylval->asSymbol = ctx.symTable->findOrDefineLiteral(YYText(), lineno(), Symbol::Type::FloatLiteral);
+}
+
+void Lexer::lexOnBoolLiteral()
+{
+    LAVASCRIPT_ASSERT(ctx.yylval   != nullptr);
+    LAVASCRIPT_ASSERT(ctx.symTable != nullptr);
+    ctx.yylval->asSymbol = ctx.symTable->findOrDefineLiteral(YYText(), lineno(), Symbol::Type::BoolLiteral);
+}
+
+void Lexer::lexOnStrLiteral()
+{
+    LAVASCRIPT_ASSERT(ctx.yylval   != nullptr);
+    LAVASCRIPT_ASSERT(ctx.symTable != nullptr);
+
+    // We have to do this special handling here to
+    // resolve escaped string characters like \n, \t, \r, etc.
+    const std::string escaped = escapeString(YYText());
+    ctx.yylval->asSymbol = ctx.symTable->findOrDefineLiteral(escaped.c_str(), lineno(), Symbol::Type::StrLiteral);
+}
+
+} // namespace lavascript {}
+
+%}
+
+/* +-------------------------------------------------+ *
+ * | Macros used by the rules (regular expressions): | *
+ * +-------------------------------------------------+ */
+
+LETTER        [a-z_A-Z]
+DIGIT         [0-9]
+HEXA_PREFIX   ("0x"|"0X")
+HEXA_CHAR     [a-fA-F]
+EXPONENT      [eE][+-]?{DIGIT}+
+FRACT         "."{DIGIT}+
+INT_LITERAL   -?({DIGIT}|{HEXA_PREFIX})({DIGIT}|{HEXA_CHAR})*
+FLT_LITERAL   -?{DIGIT}+{FRACT}{EXPONENT}?
+BOOL_LITERAL  ("true"|"false")
+STR_LITERAL   \"(\\.|[^\"])*\"
+IDENTIFIER    {LETTER}({LETTER}|{DIGIT})*
+WHITE_SPACE   [ \t\f\v]
+NEW_LINE      [\n\r]
+
+/* +-------------------------------------------------+ *
+ * | The lexer rules (language tokens / leaf nodes): | *
+ * +-------------------------------------------------+ */
+
+%%
+
+    /* ---- Comments and whitespace: ---- */
+{WHITE_SPACE}    { }                                                     /* Whitespace ignored                               */
+{NEW_LINE}       { AS_LAVASCRIPT_LEXER(this).lexOnNewLine();           } /* Keep track of the latest line for error printing */
+"//"             { AS_LAVASCRIPT_LEXER(this).lexOnSingleLineComment(); } /* C++ style single line comment                    */
+"/*"             { AS_LAVASCRIPT_LEXER(this).lexOnMultiLineComment();  } /* C-style multi-line comment block                 */
+"*/"             { YY_FATAL_ERROR("unmatched end of multi-line comment block"); }
+
+    /* ---- Miscellaneous tokens and operators: ---- */
+"."              { LEX_LOG_TOKEN( "."   ); return lavascript::Parser::token::MEMBER_REF;           }
+"("              { LEX_LOG_TOKEN( "("   ); return lavascript::Parser::token::OPEN_PAR;             }
+")"              { LEX_LOG_TOKEN( ")"   ); return lavascript::Parser::token::CLOSE_PAR;            }
+"{"              { LEX_LOG_TOKEN( "{"   ); return lavascript::Parser::token::OPEN_CBRAC;           }
+"}"              { LEX_LOG_TOKEN( "}"   ); return lavascript::Parser::token::CLOSE_CBRAC;          }
+"["              { LEX_LOG_TOKEN( "["   ); return lavascript::Parser::token::OPEN_BRAC;            }
+"]"              { LEX_LOG_TOKEN( "]"   ); return lavascript::Parser::token::CLOSE_BRAC;           }
+","              { LEX_LOG_TOKEN( ","   ); return lavascript::Parser::token::COMMA;                }
+";"              { LEX_LOG_TOKEN( ";"   ); return lavascript::Parser::token::SEMICOLON;            }
+":"              { LEX_LOG_TOKEN( ":"   ); return lavascript::Parser::token::COLON;                }
+".."             { LEX_LOG_TOKEN( ".."  ); return lavascript::Parser::token::RANGE;                }
+"..."            { LEX_LOG_TOKEN( "..." ); return lavascript::Parser::token::VARARGS;              }
+"->"             { LEX_LOG_TOKEN( "->"  ); return lavascript::Parser::token::ARROW;                }
+"="              { LEX_LOG_TOKEN( "="   ); return lavascript::Parser::token::OP_ASSIGN;            }
+"+"              { LEX_LOG_TOKEN( "+"   ); return lavascript::Parser::token::OP_PLUS;              }
+"-"              { LEX_LOG_TOKEN( "-"   ); return lavascript::Parser::token::OP_MINUS;             }
+"*"              { LEX_LOG_TOKEN( "*"   ); return lavascript::Parser::token::OP_MULTIPLY;          }
+"/"              { LEX_LOG_TOKEN( "/"   ); return lavascript::Parser::token::OP_DIVIDE;            }
+"%"              { LEX_LOG_TOKEN( "%"   ); return lavascript::Parser::token::OP_MODULO;            }
+"+="             { LEX_LOG_TOKEN( "+="  ); return lavascript::Parser::token::OP_PLUS_ASSIGN;       }
+"-="             { LEX_LOG_TOKEN( "-="  ); return lavascript::Parser::token::OP_MINUS_ASSIGN;      }
+"*="             { LEX_LOG_TOKEN( "*="  ); return lavascript::Parser::token::OP_MULTIPLY_ASSIGN;   }
+"/="             { LEX_LOG_TOKEN( "/="  ); return lavascript::Parser::token::OP_DIVIDE_ASSIGN;     }
+"%="             { LEX_LOG_TOKEN( "%="  ); return lavascript::Parser::token::OP_MODULO_ASSIGN;     }
+">"              { LEX_LOG_TOKEN( ">"   ); return lavascript::Parser::token::OP_CMP_GREATER_THAN;  }
+"<"              { LEX_LOG_TOKEN( "<"   ); return lavascript::Parser::token::OP_CMP_LESS_THAN;     }
+">="             { LEX_LOG_TOKEN( ">="  ); return lavascript::Parser::token::OP_CMP_GREATER_EQUAL; }
+"<="             { LEX_LOG_TOKEN( "<="  ); return lavascript::Parser::token::OP_CMP_LESS_EQUAL;    }
+"=="             { LEX_LOG_TOKEN( "=="  ); return lavascript::Parser::token::OP_CMP_EQUAL;         }
+"!="             { LEX_LOG_TOKEN( "!="  ); return lavascript::Parser::token::OP_CMP_NOT_EQUAL;     }
+"and"            { LEX_LOG_TOKEN( "and" ); return lavascript::Parser::token::OP_LOGIC_AND;         }
+"or"             { LEX_LOG_TOKEN( "or"  ); return lavascript::Parser::token::OP_LOGIC_OR;          }
+"not"            { LEX_LOG_TOKEN( "not" ); return lavascript::Parser::token::OP_LOGIC_NOT;         }
+
+    /* ---- Built-in types: ---- */
+"int"            { LEX_LOG_TYPE( "int"      ); return lavascript::Parser::token::TID_INT;          }
+"long"           { LEX_LOG_TYPE( "long"     ); return lavascript::Parser::token::TID_LONG;         }
+"float"          { LEX_LOG_TYPE( "float"    ); return lavascript::Parser::token::TID_FLT;          }
+"double"         { LEX_LOG_TYPE( "double"   ); return lavascript::Parser::token::TID_DBL;          }
+"bool"           { LEX_LOG_TYPE( "bool"     ); return lavascript::Parser::token::TID_BOOL;         }
+"str"            { LEX_LOG_TYPE( "str"      ); return lavascript::Parser::token::TID_STR;          }
+"array"          { LEX_LOG_TYPE( "array"    ); return lavascript::Parser::token::TID_ARRAY;        }
+"range"          { LEX_LOG_TYPE( "range"    ); return lavascript::Parser::token::TID_RANGE;        }
+"any"            { LEX_LOG_TYPE( "any"      ); return lavascript::Parser::token::TID_ANY;          }
+"tid"            { LEX_LOG_TYPE( "tid"      ); return lavascript::Parser::token::TID_TYPEID;       }
+"function"       { LEX_LOG_TYPE( "function" ); return lavascript::Parser::token::TID_FUNC;         }
+
+    /* ---- Language keywords: ---- */
+"import"         { LEX_LOG_KEYW( "import"   ); return lavascript::Parser::token::KW_IMPORT;        }
+"if"             { LEX_LOG_KEYW( "if"       ); return lavascript::Parser::token::KW_IF;            }
+"then"           { LEX_LOG_KEYW( "then"     ); return lavascript::Parser::token::KW_THEN;          }
+"else"           { LEX_LOG_KEYW( "else"     ); return lavascript::Parser::token::KW_ELSE;          }
+"elseif"         { LEX_LOG_KEYW( "elseif"   ); return lavascript::Parser::token::KW_ELSEIF;        }
+"end"            { LEX_LOG_KEYW( "end"      ); return lavascript::Parser::token::KW_END;           }
+"return"         { LEX_LOG_KEYW( "return"   ); return lavascript::Parser::token::KW_RETURN;        }
+"let"            { LEX_LOG_KEYW( "let"      ); return lavascript::Parser::token::KW_LET;           }
+"func"           { LEX_LOG_KEYW( "func"     ); return lavascript::Parser::token::KW_FUNC;          }
+"match"          { LEX_LOG_KEYW( "match"    ); return lavascript::Parser::token::KW_MATCH;         }
+"with"           { LEX_LOG_KEYW( "with"     ); return lavascript::Parser::token::KW_WITH;          }
+"case"           { LEX_LOG_KEYW( "case"     ); return lavascript::Parser::token::KW_CASE;          }
+"default"        { LEX_LOG_KEYW( "default"  ); return lavascript::Parser::token::KW_DEFAULT;       }
+"in"             { LEX_LOG_KEYW( "in"       ); return lavascript::Parser::token::KW_IN;            }
+"do"             { LEX_LOG_KEYW( "do"       ); return lavascript::Parser::token::KW_DO;            }
+"for"            { LEX_LOG_KEYW( "for"      ); return lavascript::Parser::token::KW_FOR;           }
+"while"          { LEX_LOG_KEYW( "while"    ); return lavascript::Parser::token::KW_WHILE;         }
+"loop"           { LEX_LOG_KEYW( "loop"     ); return lavascript::Parser::token::KW_LOOP;          }
+"break"          { LEX_LOG_KEYW( "break"    ); return lavascript::Parser::token::KW_BREAK;         }
+"continue"       { LEX_LOG_KEYW( "continue" ); return lavascript::Parser::token::KW_CONTINUE;      }
+"type"           { LEX_LOG_KEYW( "type"     ); return lavascript::Parser::token::KW_TYPE;          }
+"enum"           { LEX_LOG_KEYW( "enum"     ); return lavascript::Parser::token::KW_ENUM;          }
+"struct"         { LEX_LOG_KEYW( "struct"   ); return lavascript::Parser::token::KW_STRUCT;        }
+"typeOf"         { LEX_LOG_KEYW( "typeOf"   ); return lavascript::Parser::token::KW_TYPEOF;        }
+"as"             { LEX_LOG_KEYW( "as"       ); return lavascript::Parser::token::KW_AS;            }
+"null"           { LEX_LOG_KEYW( "null"     ); return lavascript::Parser::token::KW_NULL;          }
+
+    /* ---- Literal constants: ---- */
+{INT_LITERAL}    { LEX_LOG_LIT( "int-literal"     ); AS_LAVASCRIPT_LEXER(this).lexOnIntLiteral();   return lavascript::Parser::token::INT_LITERAL;  }
+{FLT_LITERAL}    { LEX_LOG_LIT( "float-literal"   ); AS_LAVASCRIPT_LEXER(this).lexOnFloatLiteral(); return lavascript::Parser::token::FLT_LITERAL;  }
+{BOOL_LITERAL}   { LEX_LOG_LIT( "boolean-literal" ); AS_LAVASCRIPT_LEXER(this).lexOnBoolLiteral();  return lavascript::Parser::token::BOOL_LITERAL; }
+{STR_LITERAL}    { LEX_LOG_LIT( "string-literal"  ); AS_LAVASCRIPT_LEXER(this).lexOnStrLiteral();   return lavascript::Parser::token::STR_LITERAL;  }
+
+    /* ---- Identifies/names: ---- */
+{IDENTIFIER}     { LEX_LOG_IDENT(); AS_LAVASCRIPT_LEXER(this).lexOnIdentifier(); return lavascript::Parser::token::IDENTIFIER; }
+
+    /* ---- Anything not listed above is an error, handled by the special '.' rule: ---- */
+.                { YY_FATAL_ERROR("invalid token"); }
+
+%%
