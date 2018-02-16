@@ -6,7 +6,6 @@ of different languages.
 
 This is mainly a hobby project to learn more about compiler design, virtual machines and interpreters.
 
-The name is ...   .
 
 ### Building
 
@@ -30,7 +29,7 @@ without Bison & Flex, but you won't be able to generate new files if the parser 
 
 ### Gallery
 
-Hello world in LavaScript Lang:
+Hello world in LavaScript Language:
 
 ```rust
 // Once
