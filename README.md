@@ -4,9 +4,6 @@
 `LavaScript` is a custom scripting language that borrows some of its syntax from
 of different languages.
 
-This is mainly a hobby project to learn more about compiler design, virtual machines and interpreters.
-
-
 ### Building
 
 To build the project on Mac and Linux, use the provided Makefile. Before building, make sure you have:
